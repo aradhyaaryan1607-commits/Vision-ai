@@ -1,0 +1,708 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>VisionAI</title>
+<style>
+  :root {
+    --bg: #11181f;
+    --panel: #1a232d;
+    --line: #2c3a48;
+    --text: #f2f5f8;
+    --muted: #9fb0c0;
+    --accent: #ffb000;
+    --accent-ink: #1b1200;
+    --danger: #ff5a4d;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; background: var(--bg); color: var(--text);
+    font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; }
+  main { max-width: 760px; margin: 0 auto; padding: 14px; padding-bottom: 40px; }
+  h1 { font-size: 1.35rem; margin: 6px 0 12px; letter-spacing: .01em; }
+  .stage { position: relative; background: #000; border: 1px solid var(--line);
+    border-radius: 10px; overflow: hidden; aspect-ratio: 4 / 3; }
+  canvas { width: 100%; height: 100%; display: block; }
+  .empty { position: absolute; inset: 0; display: grid; place-items: center;
+    color: var(--muted); text-align: center; padding: 20px; font-size: 1rem; }
+  .sources { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-top: 12px; }
+  button { font: inherit; font-weight: 650; min-height: 54px; border-radius: 10px;
+    border: 2px solid var(--line); background: var(--panel); color: var(--text); cursor: pointer; }
+  button:focus-visible, input:focus-visible { outline: 3px solid var(--accent); outline-offset: 2px; }
+  button.on { background: var(--accent); color: var(--accent-ink); border-color: var(--accent); }
+  .row { display: flex; gap: 10px; margin-top: 10px; }
+  .row > button { flex: 1; }
+  .stop { border-color: var(--danger); color: var(--danger); }
+  .panel { background: var(--panel); border: 1px solid var(--line); border-radius: 10px;
+    padding: 12px; margin-top: 12px; }
+  label { display: block; font-size: .9rem; color: var(--muted); margin-bottom: 6px; }
+  input[type=text], input[type=range] { width: 100%; }
+  input[type=text] { min-height: 46px; border-radius: 8px; border: 1px solid var(--line);
+    background: var(--bg); color: var(--text); padding: 0 12px; font: inherit; }
+  .hint { font-size: .82rem; color: var(--muted); margin: 8px 0 0; line-height: 1.45; }
+  .status { margin-top: 12px; min-height: 1.5em; font-size: 1.05rem; }
+  input[type=file] { width: 100%; color: var(--text); }
+  .hidden { display: none; }
+</style>
+</head>
+<body>
+<main>
+  <h1>VisionAI</h1>
+
+  <div class="stage">
+    <canvas id="view" width="640" height="480"></canvas>
+    <div class="empty" id="empty">Choose a camera below to start.</div>
+  </div>
+
+  <div class="sources">
+    <button id="btnPhone">Phone camera</button>
+    <button id="btnEsp">ESP32-CAM</button>
+  </div>
+  <div class="row">
+    <button id="btnFast" class="on">Fast mode</button>
+    <button id="btnWide">Wide mode</button>
+  </div>
+  <div class="row">
+    <button id="btnUnk" class="on">Unknown: on</button>
+    <button id="btnVoice" class="on">Voice: on</button>
+    <button id="btnStop" class="stop">Stop</button>
+  </div>
+
+  <div class="row"><button id="btnRead" class="on" style="min-height:64px">Product name / note</button></div>
+  <div class="panel hidden" id="readPanel"><div id="readOut" aria-live="polite" style="white-space:pre-line;font-size:1.05rem"></div></div>
+
+  <div class="row"><button id="btnTeach">Add obstacle</button></div>
+
+  <div class="panel hidden" id="teachPanel">
+    <label for="tName">Obstacle name</label>
+    <input type="text" id="tName" placeholder="chair" autocapitalize="off" autocomplete="off">
+    <label for="tFiles" style="margin-top:10px">Choose exactly 4 photos of it, taken at different distances</label>
+    <input type="file" id="tFiles" accept="image/*" multiple>
+    <div id="cards"></div>
+    <div class="row"><button id="btnAdd" class="on">Save obstacle</button><button id="btnClear" class="stop">Clear all</button></div>
+    <p class="hint" id="taughtList">Nothing saved yet.</p>
+    <label for="sim" style="margin-top:10px">Match strictness: <span id="simVal">0.80</span></label>
+    <input type="range" id="sim" min="0.6" max="0.95" step="0.01" value="0.8">
+    <p class="hint">For each photo: tap the top-left corner of the obstacle, then its bottom-right corner, and type how far away it was in metres. Use the same camera you will walk with (phone or ESP32-CAM), with the whole obstacle in view. The app learns its name and its size at each distance.</p>
+  </div>
+
+  <div class="panel hidden" id="espPanel">
+    <label for="espUrl">ESP32-CAM stream address</label>
+    <input type="text" id="espUrl" inputmode="url" autocapitalize="off" autocomplete="off"
+           placeholder="http://192.168.1.50:81/stream">
+    <div class="row"><button id="btnConnect" class="on">Connect</button></div>
+    <p class="hint">Use the same Wi-Fi as the ESP32-CAM. The address is shown in the Arduino Serial Monitor.
+      If the page is on https and the picture stays blank, allow “Insecure content” for this site in the browser settings.</p>
+  </div>
+
+  <div class="panel">
+    <label for="fov">Camera view angle: <span id="fovVal">60</span>°  (improves distance accuracy)</label>
+    <input type="range" id="fov" min="40" max="100" value="60">
+  </div>
+
+  <div class="panel">
+    <label for="apiKey">Online naming (optional): your Anthropic API key</label>
+    <input type="text" id="apiKey" placeholder="sk-ant-..." autocapitalize="off" autocomplete="off">
+    <div class="row"><button id="btnCloud">Online naming: off</button></div>
+    <p class="hint">When something in your path can't be named by the app, a small picture of just that obstacle is sent to Claude, which names it. Needs internet and uses a little of your API credit. The key stays only in this browser. Never put it in the GitHub files.</p>
+  </div>
+
+  <p class="hint">To read labels, hold the item 20 to 30 cm from the camera, steady, in good light. For the ESP32-CAM, set a larger picture size (SVGA or higher) in the CameraWebServer sketch, or small print will not be readable.</p>
+  <p class="hint">Fast: quick, knows 80 common objects. Wide: slower (a few seconds per scan), recognises many more things such as doors, stairs, poles and shoes.</p>
+  <div class="panel">
+    <label for="camH">Camera height from floor: <span id="camHVal">1.4</span> m  (for unknown obstacles)</label>
+    <input type="range" id="camH" min="0.5" max="2" step="0.1" value="1.4">
+  </div>
+  <div class="status" id="status" aria-live="polite"></div>
+</main>
+
+<script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs@4.22.0/dist/tf.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/@tensorflow-models/coco-ssd@2.2.3/dist/coco-ssd.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/@tensorflow-models/mobilenet@2.1.1/dist/mobilenet.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/tesseract.js@5.1.1/dist/tesseract.min.js"></script>
+<script>
+(() => {
+  const $ = id => document.getElementById(id);
+  const canvas = $('view'), ctx = canvas.getContext('2d');
+  const video = document.createElement('video');
+  video.playsInline = true; video.muted = true;
+  const espImg = new Image();
+  espImg.crossOrigin = 'anonymous';
+
+  let models = { fast: null, wide: null }, mode = 'fast', busy = false, source = null, running = false, voiceOn = true;
+  let lastSpoken = '', lastSpokenAt = 0, stream = null, lastDetect = 0, preds = [], known = [], unk = [], unkOn = true, lastUnk = 0;
+  let quietUntil = 0, reading = false, ocrWorker = null;
+
+
+  // Typical real-world heights in metres, used to estimate distance from box size.
+  const HEIGHT = {
+    person: 1.7, bicycle: 1.0, car: 1.5, motorcycle: 1.1, bus: 3.0, truck: 3.0,
+    'traffic light': 0.8, 'fire hydrant': 0.7, 'stop sign': 0.75, bench: 0.85,
+    cat: 0.25, dog: 0.5, backpack: 0.45, umbrella: 0.8, handbag: 0.3, suitcase: 0.6,
+    bottle: 0.25, cup: 0.1, chair: 0.9, couch: 0.9, 'potted plant': 0.5, bed: 0.6,
+    'dining table': 0.75, toilet: 0.4, tv: 0.5, laptop: 0.25, refrigerator: 1.7,
+    sink: 0.3, oven: 0.6, microwave: 0.3, book: 0.22, vase: 0.3, clock: 0.3,
+    door: 2.0, 'glass door': 2.0, stairs: 1.0, step: 0.2, pole: 3.0, pillar: 2.5, wall: 2.5,
+    box: 0.4, bag: 0.4, shoe: 0.12, stool: 0.45, cabinet: 1.0, shelf: 1.5, window: 1.2,
+    'trash can': 0.7, wheelchair: 0.9, 'phone': 0.15, fan: 1.0, gate: 1.5, sofa: 0.9, table: 0.75
+  };
+
+  const say = (text, urgent) => {
+    if (!voiceOn || !('speechSynthesis' in window)) return;
+    const synth = window.speechSynthesis;
+    if (urgent) synth.cancel();
+    else if (synth.speaking) return;
+    const u = new SpeechSynthesisUtterance(text);
+    u.rate = 1.05;
+    synth.speak(u);
+  };
+  const setStatus = t => { $('status').textContent = t; };
+
+  const metresText = d => {
+    if (d < 0.5) return 'very close';
+    const r = Math.round(d * 2) / 2;
+    return r === 1 ? '1 metre' : r + ' metres';
+  };
+
+  // --- Models ---
+  const WIDE_LABELS = ['chair','table','door','glass door','stairs','step','pole','pillar','wall','person',
+    'box','bag','bottle','cup','book','shoe','trash can','cabinet','shelf','bed','sofa','stool','potted plant',
+    'laptop','phone','window','bicycle','motorcycle','car','dog','cat','fan','wheelchair','suitcase','backpack','tv','gate'];
+  let hf = null;
+
+  async function loadModel() {
+    if (models[mode]) return;
+    setStatus('Loading AI model…'); say('Loading');
+    if (mode === 'fast') {
+      models.fast = await cocoSsd.load({ base: 'mobilenet_v2' });
+    } else {
+      if (!hf) hf = await import('https://cdn.jsdelivr.net/npm/@huggingface/transformers@3.0.2');
+      models.wide = await hf.pipeline('zero-shot-object-detection', 'Xenova/owlvit-base-patch32',
+        { device: navigator.gpu ? 'webgpu' : 'wasm' });
+    }
+    setStatus('Model ready.');
+  }
+
+  async function detectFrame(f) {
+    if (mode === 'fast') {
+      const HARD = ['chair','couch','bench','potted plant','dining table','bed','tv','laptop','book','bottle','cup','backpack','handbag','suitcase'];
+      const r = await models.fast.detect(f.el, 25, 0.2);
+      return r.filter(d => d.score >= (HARD.includes(d.class) ? 0.2 : 0.4))
+              .map(d => ({ class: d.class, bbox: d.bbox }));
+    }
+    const img = hf.RawImage.fromCanvas(canvas); // read synchronously before awaiting
+    const r = await models.wide(img, WIDE_LABELS, { threshold: 0.12, percentage: true, topk: 15 });
+    return r.map(d => ({ class: d.label, bbox: [d.box.xmin * f.w, d.box.ymin * f.h,
+      (d.box.xmax - d.box.xmin) * f.w, (d.box.ymax - d.box.ymin) * f.h] }));
+  }
+
+  // --- Sources ---
+  function stopAll() {
+    running = false; source = null; preds = []; known = []; unk = [];
+    if (stream) { stream.getTracks().forEach(t => t.stop()); stream = null; }
+    video.srcObject = null; espImg.src = '';
+    window.speechSynthesis && window.speechSynthesis.cancel();
+    $('btnPhone').classList.remove('on'); $('btnEsp').classList.remove('on');
+    $('empty').classList.remove('hidden');
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+  }
+
+  async function startPhone() {
+    stopAll();
+    $('espPanel').classList.add('hidden');
+    try {
+      await loadModel();
+      stream = await navigator.mediaDevices.getUserMedia({
+        video: { facingMode: { ideal: 'environment' }, width: { ideal: 640 }, height: { ideal: 480 } }, audio: false });
+      video.srcObject = stream; await video.play();
+      source = 'phone'; begin('Phone camera');
+    } catch (e) {
+      setStatus('Camera blocked or unavailable. Allow camera access and try again.');
+      say('Camera unavailable');
+    }
+  }
+
+  async function startEsp() {
+    stopAll();
+    $('espPanel').classList.remove('hidden');
+    const url = $('espUrl').value.trim();
+    if (!url) { setStatus('Enter the ESP32-CAM stream address first.'); say('Enter the camera address'); return; }
+    try { localStorage.setItem('visionai_esp', url); } catch (e) {}
+    try { await loadModel(); } catch (e) { setStatus('Could not load the AI model. Check internet.'); return; }
+    espImg.onerror = () => { if (source === 'esp') { setStatus('Cannot reach the ESP32-CAM. Check Wi-Fi and the address.'); say('Cannot reach the camera'); } };
+    source = 'esp';
+    espImg.src = url;
+    begin('ESP32-CAM');
+  }
+
+  function begin(name) {
+    running = true;
+    $('empty').classList.add('hidden');
+    $('btnPhone').classList.toggle('on', source === 'phone');
+    $('btnEsp').classList.toggle('on', source === 'esp');
+    setStatus(name + ' live.'); say(name + ' on');
+    if (taught.length) ensureMobilenet().catch(() => {});
+    requestAnimationFrame(loop);
+  }
+
+  // --- Main loop ---
+  function frameEl() {
+    if (source === 'phone' && video.videoWidth) return { el: video, w: video.videoWidth, h: video.videoHeight };
+    if (source === 'esp' && espImg.naturalWidth) return { el: espImg, w: espImg.naturalWidth, h: espImg.naturalHeight };
+    return null;
+  }
+
+  async function loop(ts) {
+    if (!running) return;
+    const f = frameEl();
+    if (f) {
+      if (canvas.width !== f.w || canvas.height !== f.h) { canvas.width = f.w; canvas.height = f.h; }
+      ctx.drawImage(f.el, 0, 0, f.w, f.h);
+      if (!busy && models[mode] && ts - lastDetect > 150) {
+        lastDetect = ts; busy = true;
+        const m = mode;
+        detectFrame(f).then(r => { if (m === mode && running) { known = analyse(r, f.w, f.h); refresh(); } })
+          .catch(() => {}).finally(() => { busy = false; });
+      }
+      if (unkOn && ts - lastUnk > 200) { lastUnk = ts; unk = findUnknown(f); refresh(); identifyUnknown(f); cloudName(f); }
+      draw(preds, f.w, f.h);
+    }
+    requestAnimationFrame(loop);
+  }
+
+  function analyse(dets, W, H) {
+    const fov = +$('fov').value * Math.PI / 180;
+    const focal = H / (2 * Math.tan(fov / 2));
+    const iou = (a, b) => {
+      const ix = Math.max(0, Math.min(a[0]+a[2], b[0]+b[2]) - Math.max(a[0], b[0]));
+      const iy = Math.max(0, Math.min(a[1]+a[3], b[1]+b[3]) - Math.max(a[1], b[1]));
+      const inter = ix * iy; return inter / (a[2]*a[3] + b[2]*b[3] - inter + 1e-6);
+    };
+    dets = dets.filter((d, i) => !dets.some((e, j) => j < i && e.class === d.class && iou(e.bbox, d.bbox) > 0.5));
+    return dets.map(d => {
+      const [x, y, w, h] = d.bbox;
+      const real = HEIGHT[d.class] || 0.5;
+      let dist = real * focal / Math.max(h, 1);
+      const clipped = y <= 4 || y + h >= H - 4;
+      if (clipped) dist = Math.min(dist, 1.0);
+      const cx = (x + w / 2) / W;
+      const dir = cx < 0.37 ? 'on your left' : cx > 0.63 ? 'on your right' : 'ahead';
+      const o = { name: d.class, x, y, w, h, dist, dir };
+      const prev = known.find(k => k.name === o.name && k.dir === o.dir && iou([k.x, k.y, k.w, k.h], [x, y, w, h]) > 0.3);
+      if (prev) o.dist = 0.6 * prev.dist + 0.4 * o.dist;
+      return o;
+    }).sort((a, b) => a.dist - b.dist);
+  }
+
+  function refresh() {
+    preds = known.concat(unk).sort((a, b) => a.dist - b.dist);
+    announce(preds);
+  }
+
+  // Finds things in the walking path that the AI could not name, using edges in the lower half of the picture.
+  const small = document.createElement('canvas'); small.width = 96; small.height = 72;
+  const sctx = small.getContext('2d', { willReadFrequently: true });
+  const streak = [0, 0, 0], labelCache = [null, null, null];
+  function findUnknown(f) {
+    const SW = 96, SH = 72, out = [];
+    let data;
+    try { sctx.drawImage(f.el, 0, 0, SW, SH); data = sctx.getImageData(0, 0, SW, SH).data; }
+    catch (e) { return []; }
+    const g = new Float32Array(SW * SH);
+    for (let i = 0; i < SW * SH; i++) g[i] = 0.3 * data[i * 4] + 0.59 * data[i * 4 + 1] + 0.11 * data[i * 4 + 2];
+    const fov = +$('fov').value * Math.PI / 180, camH = +$('camH').value;
+    const focal = f.h / (2 * Math.tan(fov / 2));
+    const names = ['on your left', 'ahead', 'on your right'];
+    for (let c = 0; c < 3; c++) {
+      const x0 = Math.floor(c * SW / 3), x1 = Math.floor((c + 1) * SW / 3);
+      let top = -1, bottom = -1, rows = 0;
+      for (let y = Math.floor(SH * 0.5); y < SH - 1; y++) {
+        let cnt = 0;
+        for (let x = x0; x < x1 - 1; x++) {
+          const i = y * SW + x;
+          if (Math.abs(g[i + 1] - g[i]) + Math.abs(g[i + SW] - g[i]) > 38) cnt++;
+        }
+        if (cnt / (x1 - x0) > 0.22) { rows++; if (top < 0) top = y; bottom = y; }
+      }
+      if (rows >= 5) {
+        let gap = 0;
+        for (let y = top - 1; y >= 2 && gap <= 2; y--) {
+          let cnt = 0;
+          for (let x = x0; x < x1 - 1; x++) { const i = y * SW + x; if (Math.abs(g[i + 1] - g[i]) + Math.abs(g[i + SW] - g[i]) > 38) cnt++; }
+          if (cnt / (x1 - x0) > 0.12) { top = y; gap = 0; } else gap++;
+        }
+      }
+      // Skip if the AI already named something covering this area.
+      const bx = x0 / SW * f.w, bw = (x1 - x0) / SW * f.w;
+      const covered = known.some(k => k.x < bx + bw && k.x + k.w > bx && k.y + k.h > f.h * 0.4);
+      if (rows >= 5 && !covered) streak[c]++; else { streak[c] = 0; labelCache[c] = null; }
+      if (streak[c] >= 3) {
+        const yb = (bottom + 1) / SH * f.h;
+        let dist = bottom >= SH - 4 ? 0.4 : (yb > f.h / 2 + 4 ? camH * focal / (yb - f.h / 2) : 6);
+        const nm = (labelCache[c] && Date.now() - labelCache[c].at < (labelCache[c].cloud ? 15000 : 5000)) ? labelCache[c].name : 'obstacle';
+        if (objK[nm] && top >= 2 && bottom <= SH - 4) {
+          const d2 = objK[nm] / ((bottom - top + 1) / SH);
+          if (d2 >= 0.3 && d2 <= 8) dist = d2;
+        }
+        dist = Math.max(0.3, Math.min(dist, 6));
+        const pu = unk.find(k => k.col === c); if (pu) dist = 0.6 * pu.dist + 0.4 * dist;
+        out.push({ col: c, name: nm, x: bx, y: top / SH * f.h, w: bw, h: (bottom - top + 1) / SH * f.h, dist, dir: names[c] });
+      }
+    }
+    return out;
+  }
+
+  function draw(list, W, H) {
+    const s = Math.max(W / 640, 1);
+    ctx.lineWidth = 3 * s;
+    ctx.font = `${Math.round(13 * s)}px system-ui, sans-serif`;
+    ctx.textBaseline = 'middle';
+    list.forEach(o => {
+      const close = o.dist < 1;
+      const color = close ? '#ff5a4d' : '#ffb000';
+      ctx.strokeStyle = color; ctx.strokeRect(o.x, o.y, o.w, o.h);
+      const label = `${o.name} · ${o.dist < 0.5 ? '<0.5' : o.dist.toFixed(1)} m`;
+      const tw = ctx.measureText(label).width + 10 * s, th = 20 * s;
+      const ly = o.y - th < 0 ? o.y : o.y - th;
+      ctx.fillStyle = color; ctx.fillRect(o.x, ly, tw, th);
+      ctx.fillStyle = '#1b1200'; ctx.fillText(label, o.x + 5 * s, ly + th / 2);
+    });
+  }
+
+  const spokenMap = {};
+  function announce(list) {
+    const now = Date.now();
+    if (now < quietUntil) return;
+    let cands = list.filter(o => o.dist <= 3.5);
+    // an unnamed obstacle is skipped when something named already covers that direction
+    cands = cands.filter(o => o.name !== 'obstacle' || !cands.some(k => k.name !== 'obstacle' && k.dir === o.dir));
+    if (!cands.length) return;
+    const top = cands[0];
+    const key = top.name + '|' + top.dir;
+    const prev = spokenMap[key];
+    const urgent = top.dist < 0.7;
+    const fresh = !prev || now - prev.at > 8000;
+    const closer = prev && prev.dist - top.dist >= 0.7;
+    if (!(fresh || closer)) return;
+    if (!urgent && (now - lastSpokenAt < 2500 || window.speechSynthesis.speaking)) return;
+    const msg = `${top.name} ${top.dir}, ${metresText(top.dist)}`;
+    say((urgent ? 'Careful. ' : '') + msg, urgent);
+    spokenMap[key] = { dist: top.dist, at: now };
+    lastSpokenAt = now;
+    setStatus(msg);
+  }
+
+  // --- Add obstacle: 4 photos + distances give the name and its size-to-distance rule ---
+  let mobilenetModel = null, taught = [], objK = {}, idBusy = false, cards = [];
+  const embedCv = document.createElement('canvas'); embedCv.width = 224; embedCv.height = 224;
+  const ec = embedCv.getContext('2d', { willReadFrequently: true });
+  try { taught = (JSON.parse(localStorage.getItem('visionai_taught') || '[]')).filter(t => !t.p); } catch (e) { taught = []; }
+  try { objK = JSON.parse(localStorage.getItem('visionai_k') || '{}'); } catch (e) { objK = {}; }
+
+  async function ensureMobilenet() {
+    if (!mobilenetModel) { setStatus('Loading recognition model…'); mobilenetModel = await mobilenet.load({ version: 2, alpha: 1.0 }); setStatus('Recognition model ready.'); }
+  }
+  async function embedCanvas(cv) {
+    const t = tf.tidy(() => { const e = mobilenetModel.infer(cv, true); return e.div(e.norm()).flatten(); });
+    const arr = await t.data(); t.dispose(); return arr;
+  }
+  function bestMatch(vec) {
+    let best = null;
+    for (const t of taught) {
+      let d = 0; for (let i = 0; i < vec.length; i++) d += vec[i] * t.v[i];
+      if (!best || d > best.sim) best = { name: t.name, sim: d };
+    }
+    return best;
+  }
+  async function identifyUnknown(f) {
+    if (idBusy || !taught.length || !mobilenetModel) return;
+    const now = Date.now();
+    const todo = unk.filter(o => o.name === 'obstacle' && (!labelCache[o.col] || now - labelCache[o.col].at > 1500));
+    if (!todo.length) return;
+    idBusy = true;
+    try {
+      for (const o of todo.slice(0, 3)) {
+        ec.drawImage(f.el, Math.max(0, o.x), Math.max(0, o.y), Math.max(8, o.w), Math.max(8, o.h), 0, 0, 224, 224);
+        const m = bestMatch(await embedCanvas(embedCv));
+        labelCache[o.col] = { name: (m && m.sim >= +$('sim').value) ? m.name : 'obstacle', at: Date.now() };
+      }
+    } catch (e) { /* ignore */ }
+    idBusy = false;
+  }
+  function renderTaught() {
+    const names = [...new Set(taught.map(t => t.name))];
+    $('taughtList').textContent = names.length ? 'Saved: ' + names.join(', ') : 'Nothing saved yet.';
+  }
+  function saveTaught() {
+    try { localStorage.setItem('visionai_taught', JSON.stringify(taught)); localStorage.setItem('visionai_k', JSON.stringify(objK)); return true; }
+    catch (e) { setStatus('Saved for this session only. Browser storage is full.'); return false; }
+  }
+
+  function drawCard(c) {
+    const x = c.cv.getContext('2d');
+    x.drawImage(c.bmp, 0, 0, c.cv.width, c.cv.height);
+    x.lineWidth = Math.max(3, c.cv.width / 160); x.strokeStyle = '#ffb000'; x.fillStyle = '#ffb000';
+    if (c.p1) { x.beginPath(); x.arc(c.p1.x, c.p1.y, x.lineWidth * 2, 0, 7); x.fill(); }
+    if (c.p1 && c.p2) x.strokeRect(Math.min(c.p1.x, c.p2.x), Math.min(c.p1.y, c.p2.y), Math.abs(c.p2.x - c.p1.x), Math.abs(c.p2.y - c.p1.y));
+    c.msg.textContent = !c.p1 ? 'Tap the top-left corner of the obstacle.' : !c.p2 ? 'Now tap the bottom-right corner.' : 'Marked. Tap again to redo.';
+  }
+  $('tFiles').onchange = async () => {
+    const files = [...$('tFiles').files]; cards = []; $('cards').innerHTML = '';
+    if (!files.length) return;
+    if (files.length !== 4) { setStatus('Choose exactly 4 photos.'); return; }
+    for (const file of files) {
+      try {
+        const bmp = await createImageBitmap(file);
+        const wrap = document.createElement('div'); wrap.className = 'panel';
+        const cv = document.createElement('canvas');
+        const sc = Math.min(1, 640 / bmp.width); cv.width = Math.round(bmp.width * sc); cv.height = Math.round(bmp.height * sc);
+        cv.style.cssText = 'width:100%;height:auto;border-radius:8px;touch-action:manipulation';
+        const msg = document.createElement('p'); msg.className = 'hint';
+        const lab = document.createElement('label'); lab.textContent = 'Distance in this photo (metres)'; lab.style.marginTop = '8px';
+        const inp = document.createElement('input'); inp.type = 'text'; inp.inputMode = 'decimal'; inp.placeholder = '1.5';
+        wrap.append(cv, msg, lab, inp); $('cards').append(wrap);
+        const c = { bmp, cv, msg, inp, p1: null, p2: null };
+        cv.onclick = e => {
+          const r = cv.getBoundingClientRect();
+          const pt = { x: (e.clientX - r.left) / r.width * cv.width, y: (e.clientY - r.top) / r.height * cv.height };
+          if (!c.p1 || c.p2) { c.p1 = pt; c.p2 = null; } else c.p2 = pt;
+          drawCard(c);
+        };
+        cards.push(c); drawCard(c);
+      } catch (e) { setStatus('Could not open one of the photos.'); }
+    }
+  };
+  $('btnTeach').onclick = () => $('teachPanel').classList.toggle('hidden');
+  $('sim').oninput = e => { $('simVal').textContent = (+e.target.value).toFixed(2); };
+  $('btnAdd').onclick = async () => {
+    const name = $('tName').value.trim().toLowerCase();
+    if (!name) { setStatus('Type the obstacle name first.'); return; }
+    if (cards.length !== 4) { setStatus('Choose exactly 4 photos.'); return; }
+    const dists = cards.map(c => parseFloat(c.inp.value));
+    if (cards.some((c, i) => !c.p1 || !c.p2 || !(dists[i] > 0))) { setStatus('Mark the obstacle and enter the distance in all 4 photos.'); return; }
+    try {
+      await ensureMobilenet(); setStatus('Saving…');
+      const ks = [], vecs = [];
+      for (let i = 0; i < 4; i++) {
+        const c = cards[i], sc = c.bmp.width / c.cv.width;
+        const x0 = Math.min(c.p1.x, c.p2.x), y0 = Math.min(c.p1.y, c.p2.y), w = Math.abs(c.p2.x - c.p1.x), h = Math.abs(c.p2.y - c.p1.y);
+        if (w < 8 || h < 8) { setStatus('One of the marked boxes is too small.'); return; }
+        ks.push((h / c.cv.height) * dists[i]);
+        for (const flip of [false, true]) {
+          ec.save(); if (flip) { ec.translate(224, 0); ec.scale(-1, 1); }
+          ec.drawImage(c.bmp, x0 * sc, y0 * sc, w * sc, h * sc, 0, 0, 224, 224); ec.restore();
+          vecs.push({ name, v: Array.from(await embedCanvas(embedCv), x => +x.toFixed(3)) });
+        }
+      }
+      ks.sort((a, b) => a - b);
+      objK[name] = (ks[1] + ks[2]) / 2;
+      taught = taught.filter(t => t.name !== name).concat(vecs);
+      const ok = saveTaught(); renderTaught();
+      cards = []; $('cards').innerHTML = ''; $('tFiles').value = ''; $('tName').value = '';
+      if (ok) setStatus(name + ' saved.' + (ks[3] / ks[0] > 1.6 ? ' The four photos disagree on size. Check your marks and distances.' : ''));
+    } catch (e) { setStatus('Could not load the recognition model. Check internet.'); }
+  };
+  $('btnClear').onclick = () => { taught = []; objK = {}; labelCache.fill(null); saveTaught(); renderTaught(); setStatus('Cleared all saved obstacles.'); };
+  renderTaught();
+
+  // --- Online naming (optional, user's own API key) ---
+  let cloudOn = false, cloudBusy = false, lastCloud = 0, cloudDownUntil = 0;
+  const cloudCv = document.createElement('canvas');
+  async function cloudName(f) {
+    const now = Date.now();
+    if (!cloudOn || cloudBusy || now < cloudDownUntil || now - lastCloud < 4000) return;
+    const key = $('apiKey').value.trim(); if (!key) return;
+    const o = unk.filter(k => k.name === 'obstacle' && k.dist <= 4).sort((a, b) => a.dist - b.dist)[0];
+    if (!o) return;
+    cloudBusy = true; lastCloud = now;
+    try {
+      const sc = 320 / Math.max(o.w, o.h, 1);
+      cloudCv.width = Math.max(32, Math.round(o.w * sc)); cloudCv.height = Math.max(32, Math.round(o.h * sc));
+      cloudCv.getContext('2d').drawImage(f.el, Math.max(0, o.x), Math.max(0, o.y), Math.max(8, o.w), Math.max(8, o.h), 0, 0, cloudCv.width, cloudCv.height);
+      const b64 = cloudCv.toDataURL('image/jpeg', 0.7).split(',')[1];
+      const r = await fetch('https://api.anthropic.com/v1/messages', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', 'x-api-key': key, 'anthropic-version': '2023-06-01',
+                   'anthropic-dangerous-direct-browser-access': 'true' },
+        body: JSON.stringify({ model: 'claude-haiku-5-5', max_tokens: 30, messages: [{ role: 'user', content: [
+          { type: 'image', source: { type: 'base64', media_type: 'image/jpeg', data: b64 } },
+          { type: 'text', text: 'This is a crop from a walking-aid camera showing an obstacle in the path. Reply with only its common name in 1 to 3 lowercase words (for example: chair, glass door, wet floor sign, staircase). If unsure, reply: obstacle.' }] }] })
+      });
+      if (!r.ok) throw new Error('HTTP ' + r.status);
+      const j = await r.json();
+      const name = ((j.content && j.content[0] && j.content[0].text) || '').trim().toLowerCase().replace(/[^a-z ]/g, '').slice(0, 30) || 'obstacle';
+      labelCache[o.col] = { name, at: Date.now(), cloud: true };
+    } catch (e) {
+      cloudDownUntil = Date.now() + 30000;
+      setStatus('Online naming failed. Check the key and internet.');
+    }
+    cloudBusy = false;
+  }
+  try { $('apiKey').value = localStorage.getItem('visionai_key') || ''; } catch (e) {}
+  $('apiKey').onchange = () => { try { localStorage.setItem('visionai_key', $('apiKey').value.trim()); } catch (e) {} };
+  $('btnCloud').onclick = e => {
+    cloudOn = !cloudOn; cloudDownUntil = 0;
+    e.target.textContent = 'Online naming: ' + (cloudOn ? 'on' : 'off');
+    e.target.classList.toggle('on', cloudOn);
+    if (cloudOn && !$('apiKey').value.trim()) setStatus('Paste your API key first.');
+  };
+
+  // --- Read product (name, manufacture and expiry dates) or currency ---
+  const MON = 'JAN|FEB|MAR|APR|MAY|JUN|JUL|AUG|SEP|OCT|NOV|DEC';
+  const DATE_RE = new RegExp('(?:\\d{1,2}\\s?[/\\-.]\\s?\\d{1,2}\\s?[/\\-.]\\s?\\d{2,4}|\\d{1,2}\\s?[/\\-.]\\s?\\d{4}|\\d{1,2}\\s?[/\\-.]\\s?\\d{2}(?!\\d)|\\d{1,2}\\s?(?:' + MON + ')[A-Z]*[\\s.,/\\-]*\\d{2,4}|(?:' + MON + ')[A-Z]*[\\s.,/\\-]*\\d{2,4})');
+  const MFG_RE = /\b(?:MFG|MFD|M\.?F\.?G|MANUFACTUR\w*|PKD|PKG|PACKED|PACKING|MADE ON)\b/g;
+  const EXP_RE = /\b(?:EXP\w*|USE BY|BEST BEFORE|BEST BY)\b/g;
+  const tidy = t => t.toUpperCase().replace(/(?<=\d)[OQ]|[OQ](?=\d)/g, '0').replace(/(?<=\d)[IL|]|[IL|](?=\d)/g, '1');
+
+  function findDate(T, re) {
+    for (const m of T.matchAll(re)) {
+      const seg = T.slice(m.index + m[0].length, m.index + m[0].length + 34);
+      const d = seg.match(DATE_RE);
+      if (d) return d[0].replace(/\s+/g, ' ').trim();
+      const du = seg.match(/(\d+)\s*(MONTH|DAY|YEAR)S?/);
+      if (du && re === EXP_RE) return du[1] + ' ' + du[2].toLowerCase() + 's from manufacture';
+    }
+    return null;
+  }
+  function findDates(T) {
+    let mfg = findDate(T, MFG_RE), exp = findDate(T, EXP_RE);
+    const all = [...T.matchAll(new RegExp(DATE_RE.source, 'g'))].map(x => x[0].replace(/\s+/g, ' ').trim());
+    if (mfg && exp && mfg === exp) { const other = all.filter(d => d !== mfg); if (other.length) exp = other[other.length - 1]; }
+    return { mfg, exp };
+  }
+  function getLines(data) {
+    if (data.lines && data.lines.length) return data.lines;
+    return (data.blocks || []).flatMap(b => (b.paragraphs || []).flatMap(p => p.lines || []));
+  }
+  function guessName(lines) {
+    const bad = /MFG|MFD|EXP|BATCH|MRP|PRICE|NET|WT|FSSAI|LIC|BEST|USE BY|CUSTOMER|CARE|WWW|\.COM|INGREDIENT|NUTRITION|STORE|MANUFACTUR|PACKED|RS\.?\s?\d/i;
+    const letters = t => (t.match(/[A-Za-z]/g) || []).length;
+    const c = (lines || []).map(l => ({ t: l.text.replace(/[^A-Za-z0-9&' \-]/g, ' ').replace(/\s+/g, ' ').trim(),
+        h: l.bbox.y1 - l.bbox.y0, y: l.bbox.y0, conf: l.confidence }))
+      .filter(l => l.conf > 55 && letters(l.t) >= 3 && letters(l.t) / l.t.length > 0.6 && !bad.test(l.t));
+    if (!c.length) return null;
+    c.sort((a, b) => b.h - a.h);
+    const top = [c[0]];
+    if (c[1] && c[1].h >= 0.7 * c[0].h && Math.abs(c[1].y - c[0].y) < c[0].h * 4) top.push(c[1]);
+    return top.sort((a, b) => a.y - b.y).map(l => l.t).join(' ').toLowerCase();
+  }
+  function detectCurrency(T) {
+    let cur = null;
+    if (/RESERVE BANK|BANK OF INDIA|PROMISE TO PAY|GOVERNOR/.test(T)) cur = { code: 'INR', ok: [10, 20, 50, 100, 200, 500, 2000] };
+    else if (/FEDERAL RESERVE|UNITED STATES OF AMERICA/.test(T)) cur = { code: 'USD', ok: [1, 2, 5, 10, 20, 50, 100] };
+    else if (/EUROPEAN CENTRAL BANK|\bEURO\b/.test(T)) cur = { code: 'EUR', ok: [5, 10, 20, 50, 100, 200, 500] };
+    else if (/BANK OF ENGLAND/.test(T)) cur = { code: 'GBP', ok: [5, 10, 20, 50] };
+    if (!cur) return null;
+    const counts = {};
+    (T.match(/\b\d{1,4}\b/g) || []).forEach(n => { n = +n; if (cur.ok.includes(n)) counts[n] = (counts[n] || 0) + 1; });
+    const best = Object.keys(counts).sort((a, b) => counts[b] - counts[a] || b - a)[0];
+    return { code: cur.code, amount: best ? +best : null };
+  }
+
+  const capCv = document.createElement('canvas');
+  const CUR_WORD = { INR: 'rupees', USD: 'dollars', EUR: 'euros', GBP: 'pounds', JPY: 'yen', AED: 'dirhams', AUD: 'dollars', CAD: 'dollars' };
+  const spoken = d => d.replace(/[\/\-.]/g, ' ');
+
+  async function readWithClaude() {
+    const key = $('apiKey').value.trim();
+    const b64 = capCv.toDataURL('image/jpeg', 0.85).split(',')[1];
+    const r = await fetch('https://api.anthropic.com/v1/messages', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'x-api-key': key, 'anthropic-version': '2023-06-01',
+                 'anthropic-dangerous-direct-browser-access': 'true' },
+      body: JSON.stringify({ model: 'claude-haiku-5-5', max_tokens: 200, messages: [{ role: 'user', content: [
+        { type: 'image', source: { type: 'base64', media_type: 'image/jpeg', data: b64 } },
+        { type: 'text', text: 'This photo is from the camera of a blind person. Reply with JSON only. If it shows a banknote or coin: {"type":"currency","currency":"ISO code","amount":number}. If it shows a product package: {"type":"product","name":"brand and product name","mfg":"manufacturing or packed date exactly as printed, or null","exp":"expiry or best before date exactly as printed, or null"}. If neither, or nothing is readable: {"type":"none"}.' }] }] })
+    });
+    if (!r.ok) throw new Error('HTTP ' + r.status);
+    const j = await r.json();
+    const m = ((j.content && j.content[0] && j.content[0].text) || '').match(/\{[\s\S]*\}/);
+    return m ? JSON.parse(m[0]) : null;
+  }
+
+  async function readWithOcr() {
+    if (!ocrWorker) { $('readOut').textContent = 'Loading text reader (first time only)…'; ocrWorker = await Tesseract.createWorker('eng'); }
+    const { data } = await ocrWorker.recognize(capCv);
+    const raw = data.text || '';
+    if (raw.replace(/\s/g, '').length < 6) return { type: 'none' };
+    const T = tidy(raw), cur = detectCurrency(T);
+    if (cur) return { type: 'currency', currency: cur.code, amount: cur.amount };
+    const d = findDates(T);
+    return { type: 'product', name: guessName(getLines(data)), mfg: d.mfg, exp: d.exp };
+  }
+
+  function describe(res) {
+    if (!res || res.type === 'none') return { show: 'Could not read anything. Hold the item closer and steady, with good light, then tap again.', say: 'Could not read anything. Hold the item closer and steady, then try again.' };
+    if (res.type === 'currency') {
+      const w = CUR_WORD[res.currency] || res.currency || '';
+      const t = res.amount ? 'Currency: ' + res.amount + ' ' + w : 'Currency note, but the amount is not clear. Tap again.';
+      return { show: t, say: t };
+    }
+    const name = res.name || null, mfg = res.mfg || null, exp = res.exp || null;
+    const show = 'Product: ' + (name || 'name not clear') + '\nManufactured: ' + (mfg || 'not found') + '\nExpires: ' + (exp || 'not found');
+    const say = (name ? 'Product: ' + name + '. ' : 'Product name not clear. ') +
+      (mfg ? 'Manufactured ' + spoken(mfg) + '. ' : 'Manufacture date not found. ') +
+      (exp ? 'Expires ' + spoken(exp) + '.' : 'Expiry date not found.');
+    return { show, say };
+  }
+
+  async function readItem() {
+    if (reading) return;
+    const f = frameEl();
+    if (!f || !running) { setStatus('Start a camera first.'); say('Start a camera first', true); return; }
+    reading = true; quietUntil = Date.now() + 90000;
+    $('readPanel').classList.remove('hidden'); $('readOut').textContent = 'Reading… hold the item steady.';
+    say('Reading. Hold it steady.', true);
+    try {
+      const sc = Math.max(1, 1280 / f.w);
+      capCv.width = Math.round(f.w * sc); capCv.height = Math.round(f.h * sc);
+      const cx = capCv.getContext('2d');
+      cx.drawImage(f.el, 0, 0, capCv.width, capCv.height);
+      let res = null;
+      if (cloudOn && $('apiKey').value.trim()) { try { res = await readWithClaude(); } catch (e) { res = null; } }
+      if (!res) {
+        try { cx.filter = 'grayscale(1) contrast(1.35)'; cx.drawImage(f.el, 0, 0, capCv.width, capCv.height); cx.filter = 'none'; } catch (e) {}
+        res = await readWithOcr();
+      }
+      const out = describe(res);
+      $('readOut').textContent = out.show; say(out.say, true);
+    } catch (e) {
+      $('readOut').textContent = 'Could not read. Check the camera and internet, then try again.';
+      say('Could not read. Try again.', true);
+    }
+    reading = false; quietUntil = Date.now() + 7000;
+  }
+  $('btnRead').onclick = readItem;
+
+  // --- UI ---
+  $('btnPhone').onclick = startPhone;
+  $('btnEsp').onclick = startEsp;
+  $('btnConnect').onclick = startEsp;
+  async function setMode(m) {
+    mode = m; preds = []; known = []; unk = [];
+    $('btnFast').classList.toggle('on', m === 'fast');
+    $('btnWide').classList.toggle('on', m === 'wide');
+    say(m === 'fast' ? 'Fast mode' : 'Wide mode');
+    try { await loadModel(); } catch (e) { setStatus('Could not load this model. Check internet.'); mode = 'fast'; $('btnFast').classList.add('on'); $('btnWide').classList.remove('on'); }
+  }
+  $('btnFast').onclick = () => setMode('fast');
+  $('btnWide').onclick = () => setMode('wide');
+  $('btnUnk').onclick = e => {
+    unkOn = !unkOn; unk = []; refresh();
+    e.target.textContent = 'Unknown: ' + (unkOn ? 'on' : 'off');
+    e.target.classList.toggle('on', unkOn);
+  };
+  $('camH').oninput = e => { $('camHVal').textContent = e.target.value; };
+  $('btnStop').onclick = () => { stopAll(); setStatus('Stopped.'); };
+  $('btnVoice').onclick = e => {
+    voiceOn = !voiceOn;
+    e.target.textContent = 'Voice: ' + (voiceOn ? 'on' : 'off');
+    e.target.classList.toggle('on', voiceOn);
+    if (!voiceOn) window.speechSynthesis.cancel();
+  };
+  $('fov').oninput = e => { $('fovVal').textContent = e.target.value; };
+  try { const saved = localStorage.getItem('visionai_esp'); if (saved) $('espUrl').value = saved; } catch (e) {}
+})();
+</script>
+</body>
+</html>
